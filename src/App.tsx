@@ -6,11 +6,13 @@ import { ExportDialog } from './components/ExportDialog';
 import { HelpDialog } from './components/HelpDialog';
 import { Inspector } from './components/Inspector';
 import { PreviewDialog } from './components/PreviewDialog';
+import { PwaToast } from './components/PwaToast';
 import { StickerList } from './components/StickerList';
 import { downloadBlob } from './lib/exporter';
 import { createProject, createSticker, isStickerEmpty } from './lib/project';
 import { ALLOWED_COUNTS } from './lib/spec';
 import { fromBackupFile, loadLocal, saveLocal, toBackupBlob } from './lib/storage';
+import { isIos, requestPersistentStorage, useInstallPrompt, useOnline } from './pwa';
 import { useStore } from './store';
 
 type Dialog = 'bg' | 'preview' | 'export' | 'help' | null;
@@ -23,6 +25,8 @@ export function App() {
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
   const [dropping, setDropping] = useState(false);
   const backupRef = useRef<HTMLInputElement>(null);
+  const { install, installed } = useInstallPrompt();
+  const online = useOnline();
 
   // 起動時に前回の作業を復元
   useEffect(() => {
@@ -39,7 +43,10 @@ export function App() {
     setSaveState('saving');
     const t = setTimeout(() => {
       saveLocal(project, assets)
-        .then(() => setSaveState('saved'))
+        .then(() => {
+          setSaveState('saved');
+          requestPersistentStorage();
+        })
         .catch(() => setSaveState('error'));
     }, 600);
     return () => clearTimeout(t);
@@ -141,7 +148,9 @@ export function App() {
     >
       <header className="topbar">
         <div className="brand">
-          <span className="logo">S</span>
+          <span className="logo">
+            <img src="./icon.svg" alt="" />
+          </span>
           <input
             className="title-input"
             value={project.title}
@@ -168,12 +177,23 @@ export function App() {
           <button onClick={redo} disabled={!canRedo} title="やり直す (Ctrl+Shift+Z)">
             ↷
           </button>
+          {!online && (
+            <span className="offline-badge" title="オフラインでも作業・書き出しできます">
+              オフライン
+            </span>
+          )}
           <span className={`save-state ${saveState}`}>
             {{ saved: '保存済み', saving: '保存中…', error: '保存できません' }[saveState]}
           </span>
           <details className="menu">
             <summary>メニュー</summary>
             <div className="menu-items" onClick={(e) => (e.currentTarget.parentElement as HTMLDetailsElement).removeAttribute('open')}>
+              {install && !installed && <button onClick={install}>📲 アプリとしてインストール</button>}
+              {!install && !installed && isIos() && (
+                <button onClick={() => alert('Safari の共有ボタン（□↑）から「ホーム画面に追加」を選ぶと、アプリとして使えます。')}>
+                  📲 ホーム画面に追加
+                </button>
+              )}
               <button onClick={newProject}>新しく作る</button>
               <button onClick={() => downloadBlob(toBackupBlob(project, assets), `${project.title || 'stickers'}.stamp.json`)}>
                 バックアップを保存
@@ -217,6 +237,7 @@ export function App() {
       {dialog === 'preview' && <PreviewDialog store={store} onClose={() => setDialog(null)} />}
       {dialog === 'export' && <ExportDialog store={store} onClose={() => setDialog(null)} />}
       {dialog === 'help' && <HelpDialog onClose={() => setDialog(null)} />}
+      <PwaToast beforeUpdate={() => saveLocal(project, assets)} />
     </div>
   );
 }

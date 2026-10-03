@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#06c755"/>
+  <g transform="translate(256 262)">
+    <!-- 白フチ付きのスタンプ風キャラ -->
+    <path d="M-150 -40 C-150 -125 -80 -170 0 -170 C80 -170 150 -125 150 -40 C150 60 85 130 0 130 C-35 130 -60 122 -85 108 L-140 140 L-122 80 C-140 55 -150 10 -150 -40 Z" fill="#fff"/>
+    <path d="M-124 -38 C-124 -108 -66 -144 0 -144 C66 -144 124 -108 124 -38 C124 46 70 104 0 104 C-30 104 -52 97 -74 84 L-108 102 L-98 66 C-114 44 -124 8 -124 -38 Z" fill="#ffd23f"/>
+    <circle cx="-44" cy="-40" r="18" fill="#2b2b2b"/>
+    <circle cx="44" cy="-40" r="18" fill="#2b2b2b"/>
+    <circle cx="-38" cy="-46" r="6" fill="#fff"/>
+    <circle cx="50" cy="-46" r="6" fill="#fff"/>
+    <ellipse cx="-80" cy="4" rx="18" ry="11" fill="#ff8fab"/>
+    <ellipse cx="80" cy="4" rx="18" ry="11" fill="#ff8fab"/>
+    <path d="M-30 14 Q0 44 30 14" fill="none" stroke="#2b2b2b" stroke-width="12" stroke-linecap="round"/>
+  </g>
+</svg>

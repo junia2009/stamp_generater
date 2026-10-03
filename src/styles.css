@@ -155,6 +155,9 @@ input[type='checkbox'] {
 }
 
 .topbar {
+  padding-top: max(8px, env(safe-area-inset-top)) !important;
+  padding-left: max(16px, env(safe-area-inset-left)) !important;
+  padding-right: max(16px, env(safe-area-inset-right)) !important;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -937,4 +940,41 @@ input[type='checkbox'] {
   .export {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---------- PWA ---------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: calc(100% - 32px);
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  font-size: 14px;
+}
+.offline-badge {
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  background: #6b7682;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.logo img {
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+}
+.logo:has(img) {
+  background: none;
 }
