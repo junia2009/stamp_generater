@@ -624,13 +624,16 @@ input[type='checkbox'] {
   display: grid;
   place-items: center;
   z-index: 100;
-  padding: 16px;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+    max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
 }
 .modal {
   background: var(--surface);
   border-radius: 14px;
   width: min(560px, 100%);
   max-height: calc(100vh - 32px);
+  /* iPhone の Safari では 100vh がアドレスバーの分だけ画面より高くなるため、見えている高さ（dvh）を使う */
+  max-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
   display: flex;
   flex-direction: column;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
@@ -657,6 +660,10 @@ input[type='checkbox'] {
 .modal-body {
   padding: 16px 18px;
   overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .modal-footer {
   display: flex;
@@ -940,6 +947,22 @@ input[type='checkbox'] {
   .export {
     grid-template-columns: 1fr;
   }
+  .modal-backdrop {
+    padding: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom));
+  }
+  .modal {
+    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+  }
+  .modal-body {
+    padding: 14px;
+  }
+  .modal-footer {
+    padding: 10px 14px;
+  }
+  .modal-footer button {
+    flex: 1;
+  }
 }
 
 /* ---------- PWA ---------- */
@@ -977,4 +1000,18 @@ input[type='checkbox'] {
 }
 .logo:has(img) {
   background: none;
+}
+
+.share-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: rgba(6, 199, 85, 0.08);
+  border: 1px solid rgba(6, 199, 85, 0.35);
+}
+.share-box p {
+  margin: 0;
 }

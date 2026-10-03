@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
-import { downloadBlob, exportSinglePng, exportZip, renderMainAndTab } from '../lib/exporter';
+import { downloadBlob, exportSinglePng, exportZip, renderAllPngFiles, renderMainAndTab } from '../lib/exporter';
+import { isStickerEmpty } from '../lib/project';
+import { canShareFiles, shareFiles } from '../lib/share';
 import { ALLOWED_COUNTS } from '../lib/spec';
 import { validateProject, type Issue } from '../lib/validate';
 import type { Store } from '../store';
@@ -9,6 +11,9 @@ function safeFileName(s: string) {
   return s.replace(/[\\/:*?"<>|]/g, '_').trim() || 'stickers';
 }
 
+/** この端末が画像ファイルの共有（＝写真への保存）に対応しているか */
+const SHARE_SUPPORTED = canShareFiles([new File([new Uint8Array(1)], 'test.png', { type: 'image/png' })]);
+
 export function ExportDialog({ store, onClose }: { store: Store; onClose: () => void }) {
   const { project, assets, setCurrentIndex } = store;
   const [trim, setTrim] = useState(false);
@@ -16,6 +21,34 @@ export function ExportDialog({ store, onClose }: { store: Store; onClose: () => 
   const [issues, setIssues] = useState<Issue[]>(() => validateProject(project));
   const [done, setDone] = useState(false);
   const [previews, setPreviews] = useState<{ main: string; tab: string } | null>(null);
+  /** 共有用の PNG。共有シートはタップ直後にしか開けないので、ダイアログを開いた時点で作っておく */
+  const [shareSet, setShareSet] = useState<{ all: File[]; current: File | null } | null>(null);
+  const [shareMsg, setShareMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!SHARE_SUPPORTED) return;
+    let alive = true;
+    setShareSet(null);
+    renderAllPngFiles(project, assets, trim)
+      .then((files) => {
+        if (!alive) return;
+        const stickerFiles = files.slice(0, project.stickers.length);
+        const extra = files.slice(project.stickers.length);
+        const current = isStickerEmpty(project.stickers[store.currentIndex]) ? null : stickerFiles[store.currentIndex];
+        setShareSet({ all: [...stickerFiles.filter((_, i) => !isStickerEmpty(project.stickers[i])), ...extra], current });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [project, assets, trim, store.currentIndex]);
+
+  const share = async (files: File[]) => {
+    setShareMsg(null);
+    const r = await shareFiles(files, project.title);
+    if (r === 'shared') setShareMsg('✅ 共有しました。');
+    else if (r === 'failed') setShareMsg('共有できませんでした。もう一度ボタンを押してください。');
+  };
 
   useEffect(() => {
     let alive = true;
@@ -61,6 +94,22 @@ export function ExportDialog({ store, onClose }: { store: Store; onClose: () => 
         </>
       }
     >
+      {SHARE_SUPPORTED && (
+        <div className="share-box">
+          <h4 style={{ margin: 0 }}>📷 写真に保存</h4>
+          <p className="small">
+            共有メニューで <b>「{shareSet ? `${shareSet.all.length} 枚の` : ''}画像を保存」</b> を選ぶと、写真アプリにまとめて保存されます。
+            （main.png・tab.png も含みます）
+          </p>
+          <div className="btn-row">
+            <button className="primary" disabled={!shareSet} onClick={() => shareSet && share(shareSet.all)}>
+              {shareSet ? `📷 全部（${shareSet.all.length} 枚）を写真に保存` : '画像を準備中…'}
+            </button>
+            {shareSet?.current && <button onClick={() => share([shareSet.current!])}>編集中の 1 枚だけ</button>}
+          </div>
+          {shareMsg && <p className="small">{shareMsg}</p>}
+        </div>
+      )}
       <div className="export">
         <div>
           <h4>書き出される内容</h4>
@@ -124,16 +173,20 @@ export function ExportDialog({ store, onClose }: { store: Store; onClose: () => 
           {errors.length > 0 && <p className="muted small">⛔ のエラーがあると ZIP は作成されません。⚠️ は確認のみで書き出せます。</p>}
           <p className="muted small">申請できる個数：{ALLOWED_COUNTS.join(' / ')} 個</p>
 
-          <h4>1 枚ずつ保存</h4>
-          <div className="btn-row">
-            <button
-              onClick={async () =>
-                downloadBlob(await exportSinglePng(project, assets, store.currentIndex, trim), `${String(store.currentIndex + 1).padStart(2, '0')}.png`)
-              }
-            >
-              編集中のスタンプを PNG で保存
-            </button>
-          </div>
+          {!SHARE_SUPPORTED && (
+            <>
+              <h4>1 枚ずつ保存</h4>
+              <div className="btn-row">
+                <button
+                  onClick={async () =>
+                    downloadBlob(await exportSinglePng(project, assets, store.currentIndex, trim), `${String(store.currentIndex + 1).padStart(2, '0')}.png`)
+                  }
+                >
+                  編集中のスタンプを PNG で保存
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </Modal>

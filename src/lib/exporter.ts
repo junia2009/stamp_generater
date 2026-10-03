@@ -73,6 +73,23 @@ export async function exportZip(
   return { zip: out, issues };
 }
 
+/**
+ * すべての PNG を File として作る（スタンプ → main.png → tab.png の順）。
+ * スマホで「写真に保存」するための共有シートに渡す。
+ */
+export async function renderAllPngFiles(project: Project, assets: Assets, trim: boolean): Promise<File[]> {
+  const files: File[] = [];
+  for (let i = 0; i < project.stickers.length; i++) {
+    let canvas = await renderSticker(project.stickers[i], assets, 1);
+    if (trim) canvas = trimToContent(canvas);
+    files.push(new File([await canvasToBlob(canvas)], stickerFileName(i), { type: 'image/png' }));
+  }
+  const { main, tab } = await renderMainAndTab(project, assets);
+  files.push(new File([await canvasToBlob(main)], 'main.png', { type: 'image/png' }));
+  files.push(new File([await canvasToBlob(tab)], 'tab.png', { type: 'image/png' }));
+  return files;
+}
+
 /** 1 枚だけ PNG を書き出す */
 export async function exportSinglePng(project: Project, assets: Assets, index: number, trim: boolean): Promise<Blob> {
   let canvas = await renderSticker(project.stickers[index], assets, 1);
