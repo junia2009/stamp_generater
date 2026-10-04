@@ -9,6 +9,7 @@ import {
   paintBrush,
   removeBackgroundAuto,
   removeColorAt,
+  channelDominance,
   type Pixels,
 } from '../src/lib/pixels';
 
@@ -63,6 +64,55 @@ describe('removeBackgroundAuto', () => {
     const a = alpha(out, 10, 5);
     expect(a).toBeGreaterThan(0);
     expect(a).toBeLessThan(255);
+  });
+});
+
+describe('removeBackgroundAuto（グリーンバック）', () => {
+  /**
+   * 暗い緑の背景の中央に、明るい黄緑の光（グロー）の輪、その内側に白フチ付きの水色キャラ。
+   * キャラの中に「背景と同じ緑の穴」と「背景とは違う明るい緑の模様」を置く。
+   */
+  function greenScreen(): Pixels {
+    const w = 60;
+    const h = 60;
+    const p = createPixels(w, h);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const r = Math.hypot(x - 30, y - 30);
+        let c = [5, 101, 3];
+        if (r < 24) c = r < 17 ? [255, 255, 255] : [149, 175, 68]; // グロー
+        if (r < 15) c = [110, 190, 200]; // キャラ
+        p.data.set([...c, 255], (y * w + x) * 4);
+      }
+    for (let y = 26; y <= 29; y++) for (let x = 26; x <= 29; x++) p.data.set([6, 100, 4, 255], (y * w + x) * 4); // 穴
+    for (let y = 32; y <= 35; y++) for (let x = 32; x <= 35; x++) p.data.set([120, 230, 90, 255], (y * w + x) * 4); // 緑の模様
+    return p;
+  }
+
+  it('緑が突出した色を検出する', () => {
+    expect(channelDominance([5, 101, 3])).toEqual({ channel: 1, score: 96 });
+    expect(channelDominance([250, 250, 250]).score).toBe(0);
+  });
+  it('明るさの違うグローも含めて背景を消し、キャラは残す', () => {
+    const out = removeBackgroundAuto(greenScreen(), 40);
+    expect(alpha(out, 0, 0)).toBe(0);
+    expect(alpha(out, 30, 9)).toBe(0); // グロー（r≈21）
+    expect(alpha(out, 30, 15)).toBe(255); // 白フチ
+    expect(alpha(out, 20, 30)).toBe(255); // キャラ
+  });
+  it('囲まれた背景色の穴は消し、背景と違う緑の模様は残す', () => {
+    const out = removeBackgroundAuto(greenScreen(), 40);
+    expect(alpha(out, 27, 27)).toBe(0);
+    expect(alpha(out, 33, 33)).toBe(255);
+  });
+  it('消した部分に接する画素の緑かぶりを取り除く', () => {
+    const p = greenScreen();
+    // 白フチの外端（グローに接する）に、背景の緑が少し混ざった画素
+    const i = (30 * 60 + 46) * 4;
+    p.data.set([215, 222, 215, 255], i);
+    const out = removeBackgroundAuto(p, 40);
+    expect(out.data[i + 3]).toBe(255);
+    expect([...out.data.slice(i, i + 3)]).toEqual([215, 215, 215]);
   });
 });
 

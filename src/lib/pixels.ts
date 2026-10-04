@@ -135,6 +135,12 @@ function applyMask(p: Pixels, mask: Uint8Array, keys: RGB[], tolerance: number, 
   return out;
 }
 
+function allSeeds(p: Pixels, pred: (idx: number) => boolean): number[] {
+  const seeds: number[] = [];
+  for (let idx = 0; idx < p.width * p.height; idx++) if (pred(idx)) seeds.push(idx);
+  return seeds;
+}
+
 function borderSeeds(width: number, height: number): number[] {
   const seeds: number[] = [];
   for (let x = 0; x < width; x++) seeds.push(x, (height - 1) * width + x);
@@ -142,10 +148,159 @@ function borderSeeds(width: number, height: number): number[] {
   return seeds;
 }
 
-/** 外周から続く背景を自動で透明にする（単色・ほぼ単色の背景向け） */
+/** 色の中で 1 つのチャンネル（R/G/B）がどれだけ突出しているか */
+export function channelDominance(c: RGB): { channel: 0 | 1 | 2; score: number } {
+  const channel = (c[1] >= c[0] && c[1] >= c[2] ? 1 : c[2] >= c[0] ? 2 : 0) as 0 | 1 | 2;
+  const others = [0, 1, 2].filter((k) => k !== channel).map((k) => c[k]);
+  return { channel, score: c[channel] - Math.max(...others) };
+}
+
+/** 囲まれた領域を背景の穴とみなす、背景色との平均色の差の上限 */
+const ENCLOSED_KEY_MAX_DISTANCE = 60;
+
+/** これ以上 1 チャンネルが突出していれば、グリーンバック／ブルーバック等とみなす */
+export const CHROMA_KEY_MIN_DOMINANCE = 40;
+
+/**
+ * クロマキー（グリーンバック・ブルーバック等）を透明にする。
+ * 背景色との「距離」ではなく「キーの色（例：緑）が他の色よりどれだけ強いか」で判定するので、
+ * 背景にグラデーションや光（グロー）があっても、明るさに関係なく消せる。
+ * 外周から続く部分だけを消し、境界は半透明にして、残った部分の色かぶり（緑のにじみ）も取り除く。
+ */
+export interface ChromaKeyOptions {
+  soften?: boolean;
+  /** 背景の代表色。指定すると、絵に囲まれた「背景と同じ色の穴」（文字の内側など）も消す */
+  keyColor?: RGB;
+  /** 塗りつぶしの開始点（画素番号）。省略すると画像の外周から */
+  seeds?: number[];
+}
+
+export function removeChromaKey(p: Pixels, channel: 0 | 1 | 2, tolerance: number, options: ChromaKeyOptions = {}): Pixels {
+  const { soften = true, keyColor, seeds } = options;
+  const { width, height } = p;
+  const src = p.data;
+  const o1 = channel === 0 ? 1 : 0;
+  const o2 = channel === 2 ? 1 : 2;
+  const score = (idx: number) => {
+    const i = idx * 4;
+    return src[i + channel] - Math.max(src[i + o1], src[i + o2]);
+  };
+  // この強さ以上は完全に透明、lo 以下は不透明、その間は半透明
+  const hi = Math.max(8, 60 - tolerance);
+  const lo = soften ? hi * 0.4 : hi - 0.5;
+  const n = width * height;
+  const alphaScale = new Float32Array(n).fill(1);
+  const visited = new Uint8Array(n);
+  const stack: number[] = [];
+  const visit = (idx: number) => {
+    if (visited[idx]) return;
+    const transparent = src[idx * 4 + 3] < 16;
+    const sc = score(idx);
+    if (!transparent && sc <= lo) return;
+    visited[idx] = 1;
+    alphaScale[idx] = transparent || sc >= hi ? 0 : (hi - sc) / (hi - lo);
+    stack.push(idx);
+  };
+  for (const s of seeds ?? borderSeeds(width, height)) visit(s);
+  while (stack.length) {
+    const idx = stack.pop()!;
+    const x = idx % width;
+    if (x > 0) visit(idx - 1);
+    if (x < width - 1) visit(idx + 1);
+    if (idx >= width) visit(idx - width);
+    if (idx < n - width) visit(idx + width);
+  }
+
+  if (keyColor) removeEnclosedKeyRegions();
+
+  /**
+   * 外周とつながっていない領域のうち、中心部（キーの色が強い画素）の平均色が背景色とほぼ同じものを消す。
+   * ふちの画素は線の色と混ざっているので平均に入れない。
+   * 「理」「る」の内側のような穴は消し、背景と違う色の緑（キャラの服など）は残す。
+   */
+  function removeEnclosedKeyRegions() {
+    const seen = new Uint8Array(n);
+    const region: number[] = [];
+    const coreMin = channelDominance(keyColor!).score * 0.6;
+    for (let start = 0; start < n; start++) {
+      if (visited[start] || seen[start] || score(start) < hi) continue;
+      region.length = 0;
+      let sr = 0;
+      let sg = 0;
+      let sb = 0;
+      let core = 0;
+      seen[start] = 1;
+      stack.push(start);
+      while (stack.length) {
+        const idx = stack.pop()!;
+        region.push(idx);
+        const i = idx * 4;
+        if (score(idx) >= coreMin) {
+          sr += src[i];
+          sg += src[i + 1];
+          sb += src[i + 2];
+          core++;
+        }
+        const x = idx % width;
+        const push = (m: number) => {
+          if (!visited[m] && !seen[m] && score(m) > lo) {
+            seen[m] = 1;
+            stack.push(m);
+          }
+        };
+        if (x > 0) push(idx - 1);
+        if (x < width - 1) push(idx + 1);
+        if (idx >= width) push(idx - width);
+        if (idx < n - width) push(idx + width);
+      }
+      if (core === 0) continue;
+      const dist = Math.hypot(sr / core - keyColor![0], sg / core - keyColor![1], sb / core - keyColor![2]);
+      if (dist > ENCLOSED_KEY_MAX_DISTANCE) continue;
+      for (const idx of region) {
+        const sc = score(idx);
+        visited[idx] = 1;
+        alphaScale[idx] = sc >= hi ? 0 : (hi - sc) / (hi - lo);
+      }
+    }
+  }
+
+  const out = clonePixels(p);
+  const d = out.data;
+  // 消した部分の近く（2px 以内）は、キーの色を他の色の強さまで抑えて色かぶりを除く
+  const R = 2;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const i = idx * 4;
+      if (visited[idx]) d[i + 3] = Math.round(d[i + 3] * alphaScale[idx]);
+      if (d[i + 3] === 0) continue;
+      let near = visited[idx] === 1;
+      for (let dy = -R; dy <= R && !near; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= height) continue;
+        for (let dx = -R; dx <= R; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < width && visited[yy * width + xx]) {
+            near = true;
+            break;
+          }
+        }
+      }
+      if (near) d[i + channel] = Math.min(d[i + channel], Math.max(d[i + o1], d[i + o2]));
+    }
+  }
+  return out;
+}
+
+/**
+ * 外周から続く背景を自動で透明にする。
+ * 背景が緑・青などの鮮やかな色ならクロマキー、白などならその色に近い部分を消す。
+ */
 export function removeBackgroundAuto(p: Pixels, tolerance: number, soften = true): Pixels {
   const keys = estimateBackgroundColors(p);
   if (keys.length === 0) return clonePixels(p);
+  const dom = channelDominance(keys[0]);
+  if (dom.score >= CHROMA_KEY_MIN_DOMINANCE) return removeChromaKey(p, dom.channel, tolerance, { soften, keyColor: keys[0] });
   const mask = floodMask(p, borderSeeds(p.width, p.height), keys, tolerance);
   return applyMask(p, mask, keys, tolerance, soften);
 }
@@ -167,6 +322,15 @@ export function removeColorAt(
   const i = (y * width + x) * 4;
   if (data[i + 3] < 16) return clonePixels(p);
   const key: RGB = [data[i], data[i + 1], data[i + 2]];
+  // 緑・青などの鮮やかな色をクリックしたら、明るさの違う同系色（グロー等）もまとめて消す
+  const dom = channelDominance(key);
+  if (dom.score >= CHROMA_KEY_MIN_DOMINANCE) {
+    return removeChromaKey(p, dom.channel, tolerance, {
+      soften,
+      keyColor: contiguous ? undefined : key,
+      seeds: contiguous ? [y * width + x] : allSeeds(p, (idx) => minDistance(data, idx * 4, [key]) <= tolerance),
+    });
+  }
   let mask: Uint8Array;
   if (contiguous) {
     mask = floodMask(p, [y * width + x], [key], tolerance);
