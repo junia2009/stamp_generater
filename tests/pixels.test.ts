@@ -10,6 +10,7 @@ import {
   removeBackgroundAuto,
   removeColorAt,
   channelDominance,
+  removeTinyIslands,
   type Pixels,
 } from '../src/lib/pixels';
 
@@ -80,7 +81,7 @@ describe('removeBackgroundAuto（グリーンバック）', () => {
       for (let x = 0; x < w; x++) {
         const r = Math.hypot(x - 30, y - 30);
         let c = [5, 101, 3];
-        if (r < 24) c = r < 17 ? [255, 255, 255] : [149, 175, 68]; // グロー
+        if (r < 24) c = r < 19 ? [255, 255, 255] : [149, 175, 68]; // 白フチ（r<19）とグロー
         if (r < 15) c = [110, 190, 200]; // キャラ
         p.data.set([...c, 255], (y * w + x) * 4);
       }
@@ -108,11 +109,24 @@ describe('removeBackgroundAuto（グリーンバック）', () => {
   it('消した部分に接する画素の緑かぶりを取り除く', () => {
     const p = greenScreen();
     // 白フチの外端（グローに接する）に、背景の緑が少し混ざった画素
-    const i = (30 * 60 + 46) * 4;
+    const i = (30 * 60 + 48) * 4;
     p.data.set([215, 222, 215, 255], i);
     const out = removeBackgroundAuto(p, 40);
-    expect(out.data[i + 3]).toBe(255);
-    expect([...out.data.slice(i, i + 3)]).toEqual([215, 215, 215]);
+    // 緑みが消え、内側の白フチの色に置き換わる
+    expect(out.data[i + 3]).toBeGreaterThan(0);
+    expect(out.data[i + 1]).toBeLessThanOrEqual(Math.max(out.data[i], out.data[i + 2]));
+    expect(out.data[i]).toBeGreaterThan(230);
+  });
+});
+
+describe('removeTinyIslands', () => {
+  it('数ピクセルの孤立した点だけを消す', () => {
+    const p = createPixels(20, 20);
+    p.data[(2 * 20 + 2) * 4 + 3] = 255; // 1px の点
+    for (let y = 10; y < 15; y++) for (let x = 10; x < 15; x++) p.data[(y * 20 + x) * 4 + 3] = 255; // 25px
+    removeTinyIslands(p, 6);
+    expect(alpha(p, 2, 2)).toBe(0);
+    expect(alpha(p, 12, 12)).toBe(255);
   });
 });
 

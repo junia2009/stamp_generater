@@ -214,11 +214,15 @@ export function removeChromaKey(p: Pixels, channel: 0 | 1 | 2, tolerance: number
   if (keyColor) removeEnclosedKeyRegions();
 
   /**
-   * 外周とつながっていない領域のうち、中心部（キーの色が強い画素）の平均色が背景色とほぼ同じものを消す。
-   * ふちの画素は線の色と混ざっているので平均に入れない。
-   * 「理」「る」の内側のような穴は消し、背景と違う色の緑（キャラの服など）は残す。
+   * 外周とつながっていない領域（文字の内側の穴など）を、背景なら消す。
+   * 次のどちらかなら背景とみなす：
+   * - 中心部（キーの色が強い画素）の平均色が背景色とほぼ同じ
+   * - 中心部の色の大半が、外周から実際に消した色（グローなども含む）に含まれる
+   * 背景で使われていない色の緑（キャラの服など）は残す。
    */
   function removeEnclosedKeyRegions() {
+    const removedPalette = new Uint32Array(4096);
+    for (let idx = 0; idx < n; idx++) if (visited[idx] && alphaScale[idx] === 0) removedPalette[colorBin(src, idx * 4)]++;
     const seen = new Uint8Array(n);
     const region: number[] = [];
     const coreMin = channelDominance(keyColor!).score * 0.6;
@@ -229,17 +233,24 @@ export function removeChromaKey(p: Pixels, channel: 0 | 1 | 2, tolerance: number
       let sg = 0;
       let sb = 0;
       let core = 0;
+      let strong = 0;
+      let strongInPalette = 0;
       seen[start] = 1;
       stack.push(start);
       while (stack.length) {
         const idx = stack.pop()!;
         region.push(idx);
         const i = idx * 4;
-        if (score(idx) >= coreMin) {
+        const sc = score(idx);
+        if (sc >= coreMin) {
           sr += src[i];
           sg += src[i + 1];
           sb += src[i + 2];
           core++;
+        }
+        if (sc >= hi) {
+          strong++;
+          if (removedPalette[colorBin(src, i)] >= 3) strongInPalette++;
         }
         const x = idx % width;
         const push = (m: number) => {
@@ -253,9 +264,10 @@ export function removeChromaKey(p: Pixels, channel: 0 | 1 | 2, tolerance: number
         if (idx >= width) push(idx - width);
         if (idx < n - width) push(idx + width);
       }
-      if (core === 0) continue;
-      const dist = Math.hypot(sr / core - keyColor![0], sg / core - keyColor![1], sb / core - keyColor![2]);
-      if (dist > ENCLOSED_KEY_MAX_DISTANCE) continue;
+      const sameAsKey =
+        core > 0 && Math.hypot(sr / core - keyColor![0], sg / core - keyColor![1], sb / core - keyColor![2]) <= ENCLOSED_KEY_MAX_DISTANCE;
+      const seenInBackground = strong > 0 && strongInPalette / strong >= 0.8;
+      if (!sameAsKey && !seenInBackground) continue;
       for (const idx of region) {
         const sc = score(idx);
         visited[idx] = 1;
@@ -266,30 +278,175 @@ export function removeChromaKey(p: Pixels, channel: 0 | 1 | 2, tolerance: number
 
   const out = clonePixels(p);
   const d = out.data;
-  // 消した部分の近く（2px 以内）は、キーの色を他の色の強さまで抑えて色かぶりを除く
+  for (let idx = 0; idx < n; idx++) if (visited[idx]) d[idx * 4 + 3] = Math.round(d[idx * 4 + 3] * alphaScale[idx]);
+  removeTinyIslands(out, TINY_ISLAND_MAX_PIXELS);
+
+  // 消した部分から 2px 以内（境界の帯）の画素を調べる
   const R = 2;
+  const near = new Uint8Array(n);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      const i = idx * 4;
-      if (visited[idx]) d[i + 3] = Math.round(d[i + 3] * alphaScale[idx]);
-      if (d[i + 3] === 0) continue;
-      let near = visited[idx] === 1;
-      for (let dy = -R; dy <= R && !near; dy++) {
+      if (d[idx * 4 + 3] === 0) continue;
+      let hit = visited[idx] === 1;
+      for (let dy = -R; dy <= R && !hit; dy++) {
         const yy = y + dy;
         if (yy < 0 || yy >= height) continue;
         for (let dx = -R; dx <= R; dx++) {
           const xx = x + dx;
           if (xx >= 0 && xx < width && visited[yy * width + xx]) {
-            near = true;
+            hit = true;
             break;
           }
         }
       }
-      if (near) d[i + channel] = Math.min(d[i + channel], Math.max(d[i + o1], d[i + o2]));
+      near[idx] = hit ? 1 : 0;
+    }
+  }
+
+  // 境界の画素は「背景（グロー等）」と「絵の色」が混ざっている。
+  // 近くの背景色 B と、内側にある混じりけのない色の候補 F のうち、
+  // 観測した色 C を B〜F の混色としていちばんうまく説明できる F を選び、色を F に、
+  // 混ざり具合を透明度にする（細い白フチの隣に茶色の線があっても、白フチは白のまま）。
+  const S = 4;
+  const candidates: number[] = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (!near[idx]) continue;
+      const i = idx * 4;
+      // いちばん近い「消した背景」の元の色
+      let bIdx = -1;
+      let bDist = Infinity;
+      candidates.length = 0;
+      for (let dy = -S; dy <= S; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= height) continue;
+        for (let dx = -S; dx <= S; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= width) continue;
+          const m = yy * width + xx;
+          const dd = dx * dx + dy * dy;
+          if (visited[m] && alphaScale[m] === 0) {
+            if (dd < bDist) {
+              bDist = dd;
+              bIdx = m;
+            }
+          } else if (!near[m] && !visited[m] && d[m * 4 + 3] === 255) {
+            candidates.push(m, dd);
+          }
+        }
+      }
+      let unmixed = false;
+      if (bIdx >= 0 && candidates.length) {
+        const b = bIdx * 4;
+        const cr = src[i] - src[b];
+        const cg = src[i + 1] - src[b + 1];
+        const cb = src[i + 2] - src[b + 2];
+        let best = -1;
+        let bestRes = Infinity;
+        let bestT = 1;
+        for (let k = 0; k < candidates.length; k += 2) {
+          const m = candidates[k];
+          const j = m * 4;
+          const fr = d[j] - src[b];
+          const fg = d[j + 1] - src[b + 1];
+          const fb = d[j + 2] - src[b + 2];
+          const ff = fr * fr + fg * fg + fb * fb;
+          if (ff < 1) continue;
+          const t = Math.min(1, Math.max(0, (cr * fr + cg * fg + cb * fb) / ff));
+          // 遠い候補ほど不利にして、すぐ内側の色（白フチなど）を優先する
+          const res = (cr - t * fr) ** 2 + (cg - t * fg) ** 2 + (cb - t * fb) ** 2 + UNMIX_DISTANCE_PENALTY * candidates[k + 1];
+          if (res < bestRes) {
+            bestRes = res;
+            best = m;
+            bestT = t;
+          }
+        }
+        if (best >= 0 && bestRes <= UNMIX_MAX_RESIDUAL ** 2 + UNMIX_DISTANCE_PENALTY * S * S) {
+          const j = best * 4;
+          d[i] = d[j];
+          d[i + 1] = d[j + 1];
+          d[i + 2] = d[j + 2];
+          d[i + 3] = Math.round(d[i + 3] * (soften ? bestT : bestT >= 0.5 ? 1 : 0));
+          unmixed = true;
+        }
+      }
+      if (!unmixed) d[i + channel] = Math.min(d[i + channel], Math.max(d[i + o1], d[i + o2]));
+    }
+  }
+
+  // 境界の透明度は画素ごとにばらつくので、3×3 でならしてギザギザ・ざらつきを抑える
+  if (soften) {
+    const a0 = new Uint8ClampedArray(n);
+    for (let idx = 0; idx < n; idx++) a0[idx] = d[idx * 4 + 3];
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = y * width + x;
+        if (!near[idx]) continue;
+        let sum = 0;
+        let cnt = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= height) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= width) continue;
+            sum += a0[yy * width + xx];
+            cnt++;
+          }
+        }
+        d[idx * 4 + 3] = Math.min(a0[idx], Math.round(sum / cnt) + 24);
+      }
     }
   }
   return out;
+}
+
+/** 境界の色を「背景と絵の色の混色」として説明できたとみなす誤差の上限 */
+const UNMIX_MAX_RESIDUAL = 40;
+/** 候補が 1px 遠ざかるごとに加える不利の量（誤差の二乗に対して） */
+const UNMIX_DISTANCE_PENALTY = 30;
+
+/** 4bit ずつに量子化した色の番号（0〜4095） */
+function colorBin(d: Uint8ClampedArray, i: number): number {
+  return ((d[i] >> 4) << 8) | ((d[i + 1] >> 4) << 4) | (d[i + 2] >> 4);
+}
+
+/** 背景除去で取り残された、数ピクセルだけの孤立した点を消す */
+const TINY_ISLAND_MAX_PIXELS = 6;
+
+export function removeTinyIslands(p: Pixels, maxPixels: number): void {
+  const { width, height, data } = p;
+  const n = width * height;
+  const seen = new Uint8Array(n);
+  const stack: number[] = [];
+  const region: number[] = [];
+  for (let start = 0; start < n; start++) {
+    if (seen[start] || data[start * 4 + 3] === 0) continue;
+    region.length = 0;
+    seen[start] = 1;
+    stack.push(start);
+    while (stack.length) {
+      const idx = stack.pop()!;
+      region.push(idx);
+      const x = idx % width;
+      const y = (idx - x) / width;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+          const m = yy * width + xx;
+          if (!seen[m] && data[m * 4 + 3] > 0) {
+            seen[m] = 1;
+            stack.push(m);
+          }
+        }
+      }
+    }
+    if (region.length <= maxPixels) for (const idx of region) data[idx * 4 + 3] = 0;
+  }
 }
 
 /**
